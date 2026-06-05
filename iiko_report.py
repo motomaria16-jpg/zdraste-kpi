@@ -668,6 +668,72 @@ def save_month_data(month_key: str, data: dict):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+# ─── PostgreSQL хранилище ────────────────────────────────────────────────────
+
+PG_HOST = "192.168.0.4"
+PG_PORT = 5432
+PG_DB   = "default_db"
+PG_USER = "gen_user"
+PG_PASS = "C1M.TpPT,@GEDy"
+
+def _pg_conn():
+    import psycopg2
+    return psycopg2.connect(
+        host=PG_HOST, port=PG_PORT, dbname=PG_DB,
+        user=PG_USER, password=PG_PASS, connect_timeout=10
+    )
+
+def _pg_init():
+    """Создать таблицу если не существует."""
+    try:
+        with _pg_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS month_data (
+                        month_key VARCHAR(7) PRIMARY KEY,
+                        data      JSONB NOT NULL,
+                        updated   TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+            conn.commit()
+        return True
+    except Exception as e:
+        print(f"[WARN] PostgreSQL недоступен: {e}")
+        return False
+
+def load_month_data_pg(month_key: str) -> dict:
+    """Загрузить историю из PostgreSQL, с fallback на JSON."""
+    try:
+        with _pg_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT data FROM month_data WHERE month_key = %s", (month_key,))
+                row = cur.fetchone()
+                if row:
+                    print(f"[OK] История из PostgreSQL: {month_key}")
+                    return row[0]
+    except Exception as e:
+        print(f"[WARN] PostgreSQL чтение: {e}")
+    # Fallback на локальный JSON
+    return load_month_data(month_key)
+
+def save_month_data_pg(month_key: str, data: dict):
+    """Сохранить историю в PostgreSQL и локально."""
+    # Всегда сохраняем локально как резерв
+    save_month_data(month_key, data)
+    try:
+        with _pg_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO month_data (month_key, data, updated)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (month_key) DO UPDATE
+                    SET data = EXCLUDED.data, updated = NOW()
+                """, (month_key, json.dumps(data, ensure_ascii=False)))
+            conn.commit()
+        print(f"[OK] История сохранена в PostgreSQL: {month_key}")
+    except Exception as e:
+        print(f"[WARN] PostgreSQL запись: {e}")
+
 def update_month_data(month_data: dict, all_emps: list, today: date):
     """Обновить историю месяца. Записывает ВСЕХ сотрудников (в т.ч. не работавших сегодня)."""
     date_str = today.isoformat()
@@ -1434,9 +1500,9 @@ def generate_report_html() -> str:
     schedule   = load_schedule(today)
     all_stats  = build_stats(employees, hours_data, sales_data, shift_data, attendance, schedule)
 
-    month_data = load_month_data(month_key)
+    month_data = load_month_data_pg(month_key)
     month_data = update_month_data(month_data, all_stats, today)
-    save_month_data(month_key, month_data)
+    save_month_data_pg(month_key, month_data)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     html = generate_html(all_stats, month_data, today, org_name)
@@ -1522,9 +1588,9 @@ def main():
     # ── Общая часть ──────────────────────────────────────────────────────────
     print(f"[OK] Всего: {len(all_stats)}, работали сегодня: {sum(e['worked_today'] for e in all_stats)}")
 
-    month_data = load_month_data(month_key)
+    month_data = load_month_data_pg(month_key)
     month_data = update_month_data(month_data, all_stats, today)
-    save_month_data(month_key, month_data)
+    save_month_data_pg(month_key, month_data)
     print(f"[OK] История обновлена: {month_key}")
 
     html = generate_html(all_stats, month_data, today, org_name)
