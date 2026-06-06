@@ -670,7 +670,7 @@ def save_month_data(month_key: str, data: dict):
 
 # ─── PostgreSQL хранилище ────────────────────────────────────────────────────
 
-PG_HOST = "192.168.0.4"
+PG_HOST = "5.42.102.72"
 PG_PORT = 5432
 PG_DB   = "default_db"
 PG_USER = "gen_user"
