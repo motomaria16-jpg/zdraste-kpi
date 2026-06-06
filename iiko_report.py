@@ -670,11 +670,11 @@ def save_month_data(month_key: str, data: dict):
 
 # ─── PostgreSQL хранилище ────────────────────────────────────────────────────
 
-PG_HOST = "5.42.102.72"
+PG_HOST = os.environ.get("PG_HOST", "5.42.102.72")
 PG_PORT = 5432
 PG_DB   = "default_db"
 PG_USER = "gen_user"
-PG_PASS = "C1M.TpPT,@GEDy"
+PG_PASS = os.environ.get("PG_PASS", "C1M.TpPT,@GEDy")
 
 def _pg_conn():
     import psycopg2
