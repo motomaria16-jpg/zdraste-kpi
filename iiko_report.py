@@ -4,6 +4,7 @@ iiko KPI Report — «Здрасте» корпоративный стиль
 Показывает всех сотрудников: работавших и нет. Отслеживает открытие/закрытие смены.
 """
 
+import os
 import requests
 import json
 import sys
@@ -670,11 +671,11 @@ def save_month_data(month_key: str, data: dict):
 
 # ─── PostgreSQL хранилище ────────────────────────────────────────────────────
 
-PG_HOST = os.environ.get("PG_HOST", "5.42.102.72")
+PG_HOST = os.environ.get("PG_HOST", "aws-0-eu-west-1.pooler.supabase.com")
 PG_PORT = 5432
-PG_DB   = "default_db"
-PG_USER = "gen_user"
-PG_PASS = os.environ.get("PG_PASS", "C1M.TpPT,@GEDy")
+PG_DB   = "postgres"
+PG_USER = os.environ.get("PG_USER", "postgres.ogolwcunfsfgobxclwgx")
+PG_PASS = os.environ.get("PG_PASS", "GeuBPY9vSCXuZdi6")
 
 def _pg_conn():
     import psycopg2
