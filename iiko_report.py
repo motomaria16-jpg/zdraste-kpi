@@ -1475,10 +1475,37 @@ def generate_report_html() -> str:
     date_from = today.strftime("%Y-%m-%dT00:00:00")
     date_to   = today.strftime("%Y-%m-%dT23:59:59")
 
+    # Загружаем историю из PostgreSQL
+    month_data = load_month_data_pg(month_key)
+
     try:
         token = get_token()
     except Exception as e:
-        return f"<h2>Ошибка авторизации iiko: {e}</h2>"
+        print(f"[WARN] iiko недоступна: {e} — показываем данные из базы")
+        # iiko недоступна — показываем последние данные из PostgreSQL
+        if month_data:
+            all_stats = []
+            for emp_id, emp_data in month_data.items():
+                days = emp_data.get("days", [])
+                today_day = next((d for d in days if d.get("date") == today.isoformat()), None)
+                role = "barista" if emp_data.get("name", "") in BARISTA_NAMES else "waiter"
+                all_stats.append({
+                    "id": emp_id,
+                    "name": emp_data.get("name", emp_id),
+                    "role": role,
+                    "worked_today": bool(today_day and today_day.get("worked")),
+                    "worked_hours": today_day.get("hours", 0) if today_day else 0,
+                    "open_time": today_day.get("open_time") if today_day else None,
+                    "close_time": today_day.get("close_time") if today_day else None,
+                    "revenue": today_day.get("revenue", 0) if today_day else 0,
+                    "orders_count": today_day.get("orders", 0) if today_day else 0,
+                    "avg_check": today_day.get("avg_check", 0) if today_day else 0,
+                    "planned_open": None,
+                    "planned_close": None,
+                })
+            html = generate_html(all_stats, month_data, today, "")
+            return html
+        return f"<h2>iiko недоступна и нет данных в базе</h2>"
 
     org_name = ""
     try:
@@ -1501,7 +1528,6 @@ def generate_report_html() -> str:
     schedule   = load_schedule(today)
     all_stats  = build_stats(employees, hours_data, sales_data, shift_data, attendance, schedule)
 
-    month_data = load_month_data_pg(month_key)
     month_data = update_month_data(month_data, all_stats, today)
     save_month_data_pg(month_key, month_data)
 
