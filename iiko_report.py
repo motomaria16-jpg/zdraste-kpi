@@ -210,6 +210,53 @@ def get_shift_times(token, org_id, date_from, date_to):
     except Exception as e:
         print(f"[WARN] Время смены: {e}"); return None
 
+def get_category_sales(token, org_id, date_from, date_to):
+    """Продажи по категориям блюд для каждого сотрудника."""
+    d_from = date_from[:10]
+    d_to   = date_to[:10]
+    payload = {
+        "reportType": "SALES",
+        "groupByRowFields": ["WaiterName", "DishCategory"],
+        "aggregateFields":  ["DishDiscountSumInt"],
+        "filters": {
+            "OpenDate.Typed": {
+                "filterType": "DateRange", "periodType": "CUSTOM",
+                "from": d_from, "to": d_to,
+                "includeLow": True, "includeHigh": True
+            }
+        },
+        "buildSummary": False,
+    }
+    try:
+        r = _session().post(f"{IIKO_SERVER}/api/v2/reports/olap",
+                            params={"key": token}, json=payload, timeout=90)
+        if r.status_code in (400, 500):
+            return None
+        r.raise_for_status()
+        # Строим словарь: name → {category: sum}
+        result = {}
+        for row in r.json().get("data", []):
+            raw_name = row.get("WaiterName", "") or ""
+            parts = raw_name.split()
+            name = " ".join(parts[:-1]) if parts and parts[-1].isdigit() else raw_name
+            name = name.strip()
+            if not name:
+                continue
+            cat = row.get("DishCategory", "") or ""
+            amt = float(row.get("DishDiscountSumInt", 0) or 0)
+            if name not in result:
+                result[name] = {}
+            result[name][cat] = result[name].get(cat, 0) + amt
+        print(f"[OK] Категории блюд: {len(result)} сотрудников")
+        return result
+    except Exception as e:
+        print(f"[WARN] Категории: {e}"); return None
+
+# ─── Настройки KPI по категориям ────────────────────────────────────────────
+DOBY_BAR_TARGET    = 0.08   # 8% от выручки для бариста
+DOBY_KITCHEN_TARGET = 0.08  # 8% от выручки для официантов
+DESSERTS_TARGET    = 0.13   # 13% от выручки для всех
+
 # ─── Чтение графика из Google Sheets ────────────────────────────────────────
 
 SCHEDULE_SHEET_ID  = "1dkjs7ZkcXbbSzTXIVL_e4rYDlDsPtC5IY6ZmcRg-_Mc"
@@ -805,7 +852,7 @@ def get_kpi_status(avg_check: float, role: str):
 
 # ─── Сборка статистики ──────────────────────────────────────────────────────
 
-def build_stats(employees, hours_data, sales_data, shift_data=None, attendance=None, schedule=None):
+def build_stats(employees, hours_data, sales_data, shift_data=None, attendance=None, schedule=None, category_data=None):
     """
     Собирает статистику. Сопоставление по имени сотрудника.
     Показывает только сотрудников из BARISTA_NAMES + WAITER_NAMES.
@@ -890,6 +937,7 @@ def build_stats(employees, hours_data, sales_data, shift_data=None, attendance=N
         sh = _find(shift_map, name)
         at = _find(attendance or {}, name)
         sc = _find(schedule  or {}, name)
+        cats = _find(category_data or {}, name)
 
         # Только из табеля Google Sheets — никаких данных из iiko для времени
         open_t  = at.get("open_time")
@@ -897,6 +945,8 @@ def build_stats(employees, hours_data, sales_data, shift_data=None, attendance=N
         hours   = at.get("hours", 0.0)
         # Работал если есть продажи ИЛИ в табеле указано время прихода
         worked  = bool(s.get("orders", 0) > 0 or bool(open_t))
+
+        revenue = s.get("revenue", 0.0)
 
         result.append({
             "id":            name,
@@ -906,11 +956,14 @@ def build_stats(employees, hours_data, sales_data, shift_data=None, attendance=N
             "worked_hours":  hours,
             "open_time":     open_t  if worked else None,
             "close_time":    close_t if worked else None,
-            "revenue":       s.get("revenue",   0.0),
+            "revenue":       revenue,
             "orders_count":  s.get("orders",    0),
             "avg_check":     s.get("avg_check", 0.0),
             "planned_open":  sc.get("open"),
             "planned_close": sc.get("close"),
+            "dop_bar":       cats.get("Допы Бар",   0.0) if cats else 0.0,
+            "dop_kitchen":   cats.get("Допы Кухня", 0.0) if cats else 0.0,
+            "desserts":      cats.get("Десерты",    0.0) if cats else 0.0,
         })
     return result
 
@@ -1047,6 +1100,37 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
             pc = plan_close or "—"
             plan_html = f'<span style="color:var(--muted);font-size:10px">📅 план: {po}–{pc}</span>'
 
+        # KPI по категориям
+        revenue     = emp.get("revenue", 0.0)
+        dop_bar     = emp.get("dop_bar", 0.0)
+        dop_kitchen = emp.get("dop_kitchen", 0.0)
+        desserts    = emp.get("desserts", 0.0)
+        role_key    = emp.get("role", "other")
+
+        def _cat_bar(label, emoji, amount, target_pct, revenue):
+            if revenue <= 0:
+                return ""
+            actual_pct = amount / revenue
+            display_pct = round(actual_pct * 100, 1)
+            target_display = round(target_pct * 100, 0)
+            bar_w = min(100, int(actual_pct / target_pct * 100)) if target_pct > 0 else 0
+            ok = actual_pct >= target_pct
+            color = "var(--olive)" if ok else "#C0392B"
+            icon = "✓" if ok else "✗"
+            return (f'<div style="margin-top:3px;font-size:10px;color:{color}">'
+                    f'{emoji} {label}: {display_pct}% / {target_display:.0f}% {icon}'
+                    f'<div style="height:3px;background:rgba(0,0,0,0.08);border-radius:2px;margin-top:2px">'
+                    f'<div style="height:3px;width:{bar_w}%;background:{color};border-radius:2px"></div>'
+                    f'</div></div>')
+
+        cat_html = ""
+        if worked and revenue > 0:
+            if role_key == "barista":
+                cat_html += _cat_bar("Допы Бар", "🥤", dop_bar, DOBY_BAR_TARGET, revenue)
+            elif role_key == "waiter":
+                cat_html += _cat_bar("Допы Кухня", "🍴", dop_kitchen, DOBY_KITCHEN_TARGET, revenue)
+            cat_html += _cat_bar("Десерты", "🍫", desserts, DESSERTS_TARGET, revenue)
+
         row_cls  = "" if worked else "row-absent"
         card_cls = "card-absent" if not worked else ""
 
@@ -1057,6 +1141,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
             <div class="name-main">{emp['name']}</div>
             <div class="name-meta">{worked_days} дн.{"&nbsp;&nbsp;" + viol_html if viol_html else ""}</div>
             {f'<div class="name-meta">{plan_html}</div>' if plan_html else ""}
+            {cat_html}
           </td>
           <td class="cell-time">{open_cell}</td>
           <td class="cell-time">{close_cell}</td>
@@ -1522,12 +1607,13 @@ def generate_report_html() -> str:
     except Exception:
         employees = []
 
-    hours_data = get_worked_hours(token, org_id, date_from, date_to)
-    sales_data = get_sales(token, org_id, date_from, date_to)
-    shift_data = get_shift_times(token, org_id, date_from, date_to)
-    attendance = load_attendance(today)
-    schedule   = load_schedule(today)
-    all_stats  = build_stats(employees, hours_data, sales_data, shift_data, attendance, schedule)
+    hours_data    = get_worked_hours(token, org_id, date_from, date_to)
+    sales_data    = get_sales(token, org_id, date_from, date_to)
+    shift_data    = get_shift_times(token, org_id, date_from, date_to)
+    category_data = get_category_sales(token, org_id, date_from, date_to)
+    attendance    = load_attendance(today)
+    schedule      = load_schedule(today)
+    all_stats     = build_stats(employees, hours_data, sales_data, shift_data, attendance, schedule, category_data)
 
     month_data = update_month_data(month_data, all_stats, today)
     save_month_data_pg(month_key, month_data)
@@ -1602,16 +1688,17 @@ def main():
         except Exception as e:
             print(f"[ERROR] Сотрудники: {e}"); employees = []
 
-        hours_data = get_worked_hours(token, org_id, date_from, date_to)
-        sales_data = get_sales(token, org_id, date_from, date_to)
-        shift_data = get_shift_times(token, org_id, date_from, date_to)
-        attendance = load_attendance(today)
-        schedule   = load_schedule(today)
+        hours_data    = get_worked_hours(token, org_id, date_from, date_to)
+        sales_data    = get_sales(token, org_id, date_from, date_to)
+        shift_data    = get_shift_times(token, org_id, date_from, date_to)
+        category_data = get_category_sales(token, org_id, date_from, date_to)
+        attendance    = load_attendance(today)
+        schedule      = load_schedule(today)
         if hours_data and "raw_xml" in hours_data:
             print(f"[DEBUG] hours XML: {hours_data['raw_xml'][:300]}")
         if sales_data and "raw_xml" in sales_data:
             print(f"[DEBUG] sales XML: {sales_data['raw_xml'][:300]}")
-        all_stats  = build_stats(employees, hours_data, sales_data, shift_data, attendance, schedule)
+        all_stats  = build_stats(employees, hours_data, sales_data, shift_data, attendance, schedule, category_data)
 
     # ── Общая часть ──────────────────────────────────────────────────────────
     print(f"[OK] Всего: {len(all_stats)}, работали сегодня: {sum(e['worked_today'] for e in all_stats)}")
