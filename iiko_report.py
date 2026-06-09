@@ -808,6 +808,9 @@ def update_month_data(month_data: dict, all_emps: list, today: date):
             "orders":      emp["orders_count"],
             "open_time":   emp.get("open_time"),
             "close_time":  emp.get("close_time"),
+            "dop_bar":     emp.get("dop_bar", 0.0),
+            "dop_kitchen": emp.get("dop_kitchen", 0.0),
+            "desserts":    emp.get("desserts", 0.0),
         }
         if existing:
             existing.update(day_record)
@@ -836,6 +839,12 @@ def calc_monthly_avg_check(days: list) -> float:
     total_rev    = sum(d.get("revenue", 0) for d in days if d.get("worked"))
     total_orders = sum(d.get("orders",  0) for d in days if d.get("worked"))
     return round(total_rev / total_orders, 2) if total_orders > 0 else 0.0
+
+def calc_monthly_category_pct(days: list, category: str) -> float:
+    """Процент категории от общей выручки за месяц."""
+    total_rev = sum(d.get("revenue", 0) for d in days if d.get("worked"))
+    total_cat = sum(d.get(category, 0) for d in days if d.get("worked"))
+    return round(total_cat / total_rev, 4) if total_rev > 0 else 0.0
 
 def get_kpi_status(avg_check: float, role: str):
     levels = KPI.get(role, [])
@@ -1114,7 +1123,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
             pc = plan_close or "—"
             plan_html = f'<span style="color:var(--muted);font-size:10px">📅 план: {po}–{pc}</span>'
 
-        # KPI по категориям
+        # KPI по категориям — берём месячные данные
         revenue     = emp.get("revenue", 0.0)
         dop_bar     = emp.get("dop_bar", 0.0)
         dop_kitchen = emp.get("dop_kitchen", 0.0)
@@ -1123,10 +1132,15 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         dop_amount  = dop_bar if role_key == "barista" else dop_kitchen
         dop_label   = "Допы Бар" if role_key == "barista" else "Допы Кухня"
 
-        def _kpi_cell(amount, target_pct, revenue, bonus=6000):
-            if revenue <= 0 or not worked:
+        # Месячные показатели по категориям
+        dop_key      = "dop_bar" if role_key == "barista" else "dop_kitchen"
+        monthly_dop  = calc_monthly_category_pct(month_days, dop_key)
+        monthly_des  = calc_monthly_category_pct(month_days, "desserts")
+        monthly_rev  = sum(d.get("revenue", 0) for d in month_days if d.get("worked"))
+
+        def _kpi_cell(actual_pct, target_pct, bonus=6000):
+            if monthly_rev <= 0 or not worked:
                 return '<span class="dash">—</span>'
-            actual_pct = amount / revenue
             display_pct = round(actual_pct * 100, 1)
             target_display = int(target_pct * 100)
             bar_w = min(100, int(actual_pct / target_pct * 100)) if target_pct > 0 else 0
@@ -1144,8 +1158,8 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
             </div>
             <div class="progress-meta"><span style="color:var(--muted);font-size:10px">цель {target_display}%{" · " + gap_str if gap_str else ""}</span></div>'''
 
-        dop_cell      = _kpi_cell(dop_amount, DOBY_BAR_TARGET, revenue)
-        desserts_cell = _kpi_cell(desserts, DESSERTS_TARGET, revenue)
+        dop_cell      = _kpi_cell(monthly_dop, DOBY_BAR_TARGET)
+        desserts_cell = _kpi_cell(monthly_des, DESSERTS_TARGET)
 
         row_cls  = "" if worked else "row-absent"
         card_cls = "card-absent" if not worked else ""
