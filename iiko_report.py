@@ -1106,30 +1106,32 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         dop_kitchen = emp.get("dop_kitchen", 0.0)
         desserts    = emp.get("desserts", 0.0)
         role_key    = emp.get("role", "other")
+        dop_amount  = dop_bar if role_key == "barista" else dop_kitchen
+        dop_label   = "Допы Бар" if role_key == "barista" else "Допы Кухня"
 
-        def _cat_bar(label, emoji, amount, target_pct, revenue):
-            if revenue <= 0:
-                return ""
+        def _kpi_cell(amount, target_pct, revenue, bonus=6000):
+            if revenue <= 0 or not worked:
+                return '<span class="dash">—</span>'
             actual_pct = amount / revenue
             display_pct = round(actual_pct * 100, 1)
-            target_display = round(target_pct * 100, 0)
+            target_display = int(target_pct * 100)
             bar_w = min(100, int(actual_pct / target_pct * 100)) if target_pct > 0 else 0
             ok = actual_pct >= target_pct
-            color = "var(--olive)" if ok else "#C0392B"
-            icon = "✓" if ok else "✗"
-            return (f'<div style="margin-top:3px;font-size:10px;color:{color}">'
-                    f'{emoji} {label}: {display_pct}% / {target_display:.0f}% {icon}'
-                    f'<div style="height:3px;background:rgba(0,0,0,0.08);border-radius:2px;margin-top:2px">'
-                    f'<div style="height:3px;width:{bar_w}%;background:{color};border-radius:2px"></div>'
-                    f'</div></div>')
+            color = "var(--olive)" if ok else "var(--terra2)"
+            badge = f'<span class="bonus-badge" style="border-color:{color};color:{color}">+{bonus//1000}т.р.</span>' if ok else ""
+            gap_pct = max(0, target_pct - actual_pct)
+            gap_str = f'<span class="next-target">ещё {gap_pct*100:.1f}%</span>' if not ok else ""
+            return f'''<div class="month-row">
+              <span class="month-val" style="color:{color}">{display_pct}%</span>
+              {badge}
+            </div>
+            <div class="progress-wrap">
+              <div class="progress-bar" style="width:{bar_w}%;background:{color}"></div>
+            </div>
+            <div class="progress-meta"><span style="color:var(--muted);font-size:10px">цель {target_display}%{" · " + gap_str if gap_str else ""}</span></div>'''
 
-        cat_html = ""
-        if worked and revenue > 0:
-            if role_key == "barista":
-                cat_html += _cat_bar("Допы Бар", "🥤", dop_bar, DOBY_BAR_TARGET, revenue)
-            elif role_key == "waiter":
-                cat_html += _cat_bar("Допы Кухня", "🍴", dop_kitchen, DOBY_KITCHEN_TARGET, revenue)
-            cat_html += _cat_bar("Десерты", "🍫", desserts, DESSERTS_TARGET, revenue)
+        dop_cell      = _kpi_cell(dop_amount, DOBY_BAR_TARGET, revenue)
+        desserts_cell = _kpi_cell(desserts, DESSERTS_TARGET, revenue)
 
         row_cls  = "" if worked else "row-absent"
         card_cls = "card-absent" if not worked else ""
@@ -1141,12 +1143,13 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
             <div class="name-main">{emp['name']}</div>
             <div class="name-meta">{worked_days} дн.{"&nbsp;&nbsp;" + viol_html if viol_html else ""}</div>
             {f'<div class="name-meta">{plan_html}</div>' if plan_html else ""}
-            {cat_html}
           </td>
           <td class="cell-time">{open_cell}</td>
           <td class="cell-time">{close_cell}</td>
           <td class="cell-hours">{hours_fmt}</td>
           <td class="cell-today">{today_chk}</td>
+          <td class="cell-month">{dop_cell}</td>
+          <td class="cell-month">{desserts_cell}</td>
           <td class="cell-month">
             <div class="month-row">
               <span class="month-val">{month_chk}</span>
@@ -1217,6 +1220,8 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         <th>Уход<br><span class="th-norm">план +10 мин</span></th>
         <th>Часов<br><span class="th-sub">сегодня</span></th>
         <th>Ср. чек<br><span class="th-sub">сегодня</span></th>
+        <th>Допы<br><span class="th-norm">≥ 8%</span></th>
+        <th>Десерты<br><span class="th-norm">≥ 13%</span></th>
         <th>Ср. чек<br><span class="th-sub">за месяц / KPI</span></th>
         <th>Динамика</th>
       </tr></thead>
