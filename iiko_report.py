@@ -1014,7 +1014,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         return ""
 
     kpi_levels   = KPI.get(role_key, [])
-    legend_html  = "".join(
+    avg_legend  = "".join(
         f'<div class="kpi-legend-item">'
         f'<span class="kpi-dot" style="background:{l["color"]}"></span>'
         f'<span class="kpi-threshold">{l["label"]}</span>'
@@ -1022,6 +1022,20 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         f'<span class="kpi-bonus">+{l["bonus"]//1000} т.р.</span>'
         f'</div>'
         for l in reversed(kpi_levels)
+    )
+    dop_label  = "Допы Бар" if role_key == "barista" else "Допы Кухня"
+    legend_html = (
+        f'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">'
+        f'<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Ср. чек:</div>'
+        f'{avg_legend}'
+        f'<div style="width:1px;height:20px;background:var(--border)"></div>'
+        f'<div class="kpi-legend-item"><span class="kpi-dot" style="background:var(--olive)"></span>'
+        f'<span class="kpi-threshold">{dop_label} ≥ {int(DOBY_BAR_TARGET*100)}%</span>'
+        f'<span class="kpi-sep">→</span><span class="kpi-bonus">+6 т.р.</span></div>'
+        f'<div class="kpi-legend-item"><span class="kpi-dot" style="background:var(--olive)"></span>'
+        f'<span class="kpi-threshold">Десерты ≥ {int(DESSERTS_TARGET*100)}%</span>'
+        f'<span class="kpi-sep">→</span><span class="kpi-bonus">+6 т.р.</span></div>'
+        f'</div>'
     )
 
     rows = ""
@@ -1160,7 +1174,6 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
             </div>
             {f'<div class="progress-meta">{next_html}</div>' if next_html else ""}
           </td>
-          <td class="cell-spark">{sparkline}</td>
         </tr>"""
 
         # Мобильная карточка
@@ -1223,7 +1236,6 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         <th>Допы<br><span class="th-norm">≥ 8%</span></th>
         <th>Десерты<br><span class="th-norm">≥ 13%</span></th>
         <th>Ср. чек<br><span class="th-sub">за месяц / KPI</span></th>
-        <th>Динамика</th>
       </tr></thead>
       <tbody>{rows}</tbody>
     </table>
