@@ -37,12 +37,13 @@ BARISTA_NAMES = [
     "Шкурко Виктория",
     "Федотова Евгения",
     "Милосердина Виктория",
+    "Кирющенко Данила",
 ]
 WAITER_NAMES = [
     "Герасимчук Мария",
     "Харланова Виктория",
-    "Холодняк Тимур",
     "Ефимова Елизавета",
+    "Калмыкова Алина",
 ]
 # ───────────────────────────────────────────────────────────────────────────
 
@@ -1140,7 +1141,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         monthly_rev  = sum(d.get("revenue", 0) for d in month_days if d.get("worked"))
 
         def _kpi_cell(actual_pct, target_pct, bonus=6000):
-            if monthly_rev <= 0 or not worked:
+            if monthly_rev <= 0:
                 return '<span class="dash">—</span>'
             display_pct = round(actual_pct * 100, 1)
             target_display = int(target_pct * 100)
