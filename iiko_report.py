@@ -36,13 +36,12 @@ WAITER_ROLES  = ["2145125755",  "2145125516", "1680747245"]
 BARISTA_NAMES = [
     "Шкурко Виктория",
     "Федотова Евгения",
-    "Кирющенко Данила",
     "Милосердина Виктория",
 ]
 WAITER_NAMES = [
     "Герасимчук Мария",
     "Харланова Виктория",
-    "Калмыкова Алина",
+    "Холодняк Тимур",
     "Ефимова Елизавета",
 ]
 # ───────────────────────────────────────────────────────────────────────────
@@ -811,6 +810,7 @@ def update_month_data(month_data: dict, all_emps: list, today: date):
             "close_time":  emp.get("close_time"),
             "dop_bar":     emp.get("dop_bar", 0.0),
             "dop_kitchen": emp.get("dop_kitchen", 0.0),
+            "dops":        emp.get("dop_bar", 0.0) + emp.get("dop_kitchen", 0.0),
             "desserts":    emp.get("desserts", 0.0),
         }
         if existing:
@@ -1033,14 +1033,14 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         f'</div>'
         for l in reversed(kpi_levels)
     )
-    dop_label  = "Допы Бар" if role_key == "barista" else "Допы Кухня"
+    dop_label  = "Допы"
     legend_html = (
         f'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">'
         f'<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Ср. чек:</div>'
         f'{avg_legend}'
         f'<div style="width:1px;height:20px;background:var(--border)"></div>'
         f'<div class="kpi-legend-item"><span class="kpi-dot" style="background:var(--olive)"></span>'
-        f'<span class="kpi-threshold">{dop_label} ≥ {int(DOBY_BAR_TARGET*100)}%</span>'
+        f'<span class="kpi-threshold">Допы ≥ {int(DOBY_BAR_TARGET*100)}%</span>'
         f'<span class="kpi-sep">→</span><span class="kpi-bonus">+6 т.р.</span></div>'
         f'<div class="kpi-legend-item"><span class="kpi-dot" style="background:var(--olive)"></span>'
         f'<span class="kpi-threshold">Десерты ≥ {int(DESSERTS_TARGET*100)}%</span>'
@@ -1134,8 +1134,8 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         dop_label   = "Допы Бар" if role_key == "barista" else "Допы Кухня"
 
         # Месячные показатели по категориям
-        dop_key      = "dop_bar" if role_key == "barista" else "dop_kitchen"
-        monthly_dop  = calc_monthly_category_pct(month_days, dop_key)
+        # Допы = Допы Бар + Допы Кухня для всех сотрудников
+        monthly_dop  = calc_monthly_category_pct(month_days, "dops")
         monthly_des  = calc_monthly_category_pct(month_days, "desserts")
         monthly_rev  = sum(d.get("revenue", 0) for d in month_days if d.get("worked"))
 
