@@ -36,7 +36,6 @@ WAITER_ROLES  = ["2145125755",  "2145125516", "1680747245"]
 BARISTA_NAMES = [
     "Шкурко Виктория",
     "Федотова Евгения",
-    "Милосердина Виктория",
     "Кирющенко Данила",
 ]
 WAITER_NAMES = [
@@ -1223,6 +1222,14 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
             <div class="card-cell">
               <div class="card-cell-label">Ср. чек сегодня</div>
               <div class="card-cell-val">{today_chk}</div>
+            </div>
+            <div class="card-cell">
+              <div class="card-cell-label">Допы ≥8%</div>
+              <div class="card-cell-val">{dop_cell}</div>
+            </div>
+            <div class="card-cell">
+              <div class="card-cell-label">Десерты ≥13%</div>
+              <div class="card-cell-val">{desserts_cell}</div>
             </div>
           </div>
           <div class="card-progress">
