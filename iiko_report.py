@@ -811,7 +811,7 @@ def update_month_data(month_data: dict, all_emps: list, today: date):
             "dop_bar":     emp.get("dop_bar", 0.0),
             "dop_kitchen": emp.get("dop_kitchen", 0.0),
             "dops":        emp.get("dop_bar", 0.0) + emp.get("dop_kitchen", 0.0),
-            "desserts":    emp.get("desserts", 0.0),
+            "desserts":    emp.get("desserts", 0.0),  # Десерты + Выпечка + Прикассовая зона
         }
         if existing:
             existing.update(day_record)
@@ -973,7 +973,7 @@ def build_stats(employees, hours_data, sales_data, shift_data=None, attendance=N
             "planned_close": sc.get("close"),
             "dop_bar":       cats.get("Допы Бар",   0.0) if cats else 0.0,
             "dop_kitchen":   cats.get("Допы Кухня", 0.0) if cats else 0.0,
-            "desserts":      cats.get("Десерты",    0.0) if cats else 0.0,
+            "desserts":    (cats.get("Десерты", 0.0) + cats.get("Выпечка", 0.0) + cats.get("Прикассовая зона", 0.0)) if cats else 0.0,
         })
     return result
 
