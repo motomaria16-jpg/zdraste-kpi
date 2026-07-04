@@ -42,7 +42,7 @@ WAITER_NAMES = [
     "Герасимчук Мария",
     "Харланова Виктория",
     "Ефимова Елизавета",
-    "Калмыкова Алина",
+    "Топал Екатерина",
 ]
 # ───────────────────────────────────────────────────────────────────────────
 
@@ -56,14 +56,14 @@ CLOSE_DEADLINE = "22:15"   # закрытие не позднее
 
 KPI = {
     "barista": [
-        {"threshold": 900,  "bonus": 10000, "label": "≥ 900 ₽",  "color": "#c8891a"},
-        {"threshold": 800,  "bonus": 5000,  "label": "≥ 800 ₽",  "color": "#7A8C5E"},
-        {"threshold": 720,  "bonus": 2000,  "label": "≥ 720 ₽",  "color": "#E8A898"},
+        {"threshold": 2000, "bonus": 10000, "label": "≥ 2000 ₽", "color": "#c8891a"},
+        {"threshold": 1650, "bonus": 5000,  "label": "≥ 1650 ₽", "color": "#7A8C5E"},
+        {"threshold": 1500, "bonus": 2000,  "label": "≥ 1500 ₽", "color": "#E8A898"},
     ],
     "waiter": [
         {"threshold": 2000, "bonus": 10000, "label": "≥ 2000 ₽", "color": "#c8891a"},
-        {"threshold": 1800, "bonus": 5000,  "label": "≥ 1800 ₽", "color": "#7A8C5E"},
-        {"threshold": 1650, "bonus": 2000,  "label": "≥ 1650 ₽", "color": "#E8A898"},
+        {"threshold": 1650, "bonus": 5000,  "label": "≥ 1650 ₽", "color": "#7A8C5E"},
+        {"threshold": 1500, "bonus": 2000,  "label": "≥ 1500 ₽", "color": "#E8A898"},
     ],
 }
 
@@ -255,7 +255,7 @@ def get_category_sales(token, org_id, date_from, date_to):
 # ─── Настройки KPI по категориям ────────────────────────────────────────────
 DOBY_BAR_TARGET    = 0.08   # 8% от выручки для бариста
 DOBY_KITCHEN_TARGET = 0.08  # 8% от выручки для официантов
-DESSERTS_TARGET    = 0.13   # 13% от выручки для всех
+DESSERTS_TARGET    = 0.05   # 5% от выручки для всех
 
 # ─── Чтение графика из Google Sheets ────────────────────────────────────────
 
@@ -810,7 +810,9 @@ def update_month_data(month_data: dict, all_emps: list, today: date):
             "close_time":  emp.get("close_time"),
             "dop_bar":     emp.get("dop_bar", 0.0),
             "dop_kitchen": emp.get("dop_kitchen", 0.0),
-            "dops":        emp.get("dop_bar", 0.0) + emp.get("dop_kitchen", 0.0),
+            "dop_water":   emp.get("dop_water", 0.0),
+            "dop_alcohol": emp.get("dop_alcohol", 0.0),
+            "dops":        emp.get("dop_bar", 0.0) + emp.get("dop_kitchen", 0.0) + emp.get("dop_water", 0.0) + emp.get("dop_alcohol", 0.0),
             "desserts":    emp.get("desserts", 0.0),  # Десерты + Выпечка + Прикассовая зона
         }
         if existing:
@@ -973,7 +975,9 @@ def build_stats(employees, hours_data, sales_data, shift_data=None, attendance=N
             "planned_close": sc.get("close"),
             "dop_bar":       cats.get("Допы Бар",   0.0) if cats else 0.0,
             "dop_kitchen":   cats.get("Допы Кухня", 0.0) if cats else 0.0,
-            "desserts":    (cats.get("Десерты", 0.0) + cats.get("Выпечка", 0.0) + cats.get("Прикассовая зона", 0.0)) if cats else 0.0,
+            "dop_water":     cats.get("Бутилированные напитки", 0.0) if cats else 0.0,
+            "dop_alcohol":   cats.get("Алкоголь", 0.0) if cats else 0.0,
+            "desserts":    (cats.get("Десерты", 0.0) + cats.get("Выпечка", 0.0) + cats.get("Прикассовая зона", 0.0) + cats.get("Мороженое", 0.0)) if cats else 0.0,
         })
     return result
 
@@ -1228,7 +1232,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
               <div class="card-cell-val">{dop_cell}</div>
             </div>
             <div class="card-cell">
-              <div class="card-cell-label">Десерты ≥13%</div>
+              <div class="card-cell-label">Десерты ≥5%</div>
               <div class="card-cell-val">{desserts_cell}</div>
             </div>
           </div>
@@ -1257,7 +1261,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         <th>Часов<br><span class="th-sub">сегодня</span></th>
         <th>Ср. чек<br><span class="th-sub">сегодня</span></th>
         <th>Допы<br><span class="th-norm">≥ 8%</span></th>
-        <th>Десерты<br><span class="th-norm">≥ 13%</span></th>
+        <th>Десерты<br><span class="th-norm">≥ 5%</span></th>
         <th>Ср. чек<br><span class="th-sub">за месяц / KPI</span></th>
       </tr></thead>
       <tbody>{rows}</tbody>
@@ -1271,7 +1275,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
 
 def generate_html(all_stats: list, month_data: dict, today: date, org_name: str = "") -> str:
     baristas = [e for e in all_stats if e["role"] == "barista"]
-    waiters  = [e for e in all_stats if e["role"] == "waiter"]
+    all_emps = [e for e in all_stats if e["role"] in ("barista", "waiter")]
     others   = [e for e in all_stats if e["role"] == "other"]
 
     worked_today = sum(1 for e in all_stats if e["worked_today"])
@@ -1279,9 +1283,9 @@ def generate_html(all_stats: list, month_data: dict, today: date, org_name: str 
     month_label  = MONTH_NAMES[today.month]
     gen_at       = datetime.now().strftime("%d.%m.%Y %H:%M")
 
-    b_sec = _role_section("barista", "Бариста",   baristas, month_data, today, "☕")
-    w_sec = _role_section("waiter",  "Официанты", waiters,  month_data, today, "🍽️")
-    o_sec = _role_section("other",   "Остальные", others,   month_data, today, "👤")
+    b_sec = _role_section("waiter", "Сотрудники", all_emps, month_data, today, "👥")
+    w_sec = ""
+    o_sec = _role_section("other",  "Остальные",  others,   month_data, today, "👤")
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
