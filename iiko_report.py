@@ -43,6 +43,8 @@ WAITER_NAMES = [
     "Харланова Виктория",
     "Ефимова Елизавета",
     "Топал Екатерина",
+    "Михнова Арина",
+    "Белянцев Яков",
 ]
 # ───────────────────────────────────────────────────────────────────────────
 
@@ -56,9 +58,9 @@ CLOSE_DEADLINE = "22:15"   # закрытие не позднее
 
 KPI = {
     "barista": [
-        {"threshold": 2000, "bonus": 10000, "label": "≥ 2000 ₽", "color": "#c8891a"},
-        {"threshold": 1650, "bonus": 5000,  "label": "≥ 1650 ₽", "color": "#7A8C5E"},
-        {"threshold": 1500, "bonus": 2000,  "label": "≥ 1500 ₽", "color": "#E8A898"},
+        {"threshold": 1600, "bonus": 10000, "label": "≥ 1600 ₽", "color": "#c8891a"},
+        {"threshold": 1350, "bonus": 5000,  "label": "≥ 1350 ₽", "color": "#7A8C5E"},
+        {"threshold": 1200, "bonus": 2000,  "label": "≥ 1200 ₽", "color": "#E8A898"},
     ],
     "waiter": [
         {"threshold": 2000, "bonus": 10000, "label": "≥ 2000 ₽", "color": "#c8891a"},
@@ -260,7 +262,39 @@ DESSERTS_TARGET    = 0.05   # 5% от выручки для всех
 # ─── Чтение графика из Google Sheets ────────────────────────────────────────
 
 SCHEDULE_SHEET_ID  = "1dkjs7ZkcXbbSzTXIVL_e4rYDlDsPtC5IY6ZmcRg-_Mc"
-SCHEDULE_SHEET_GID = "123774072"
+SCHEDULE_SHEET_GID = "1043557538"  # fallback
+
+MONTH_SHEET_NAMES = {
+    1: "январь 2026", 2: "февраль 2026", 3: "март 2026",
+    4: "апрель 2026", 5: "май 2026",     6: "июнь 2026",
+    7: "июль 2026",   8: "август 2026",  9: "сентябрь 2026",
+    10: "октябрь 2026", 11: "ноябрь 2026", 12: "декабрь 2026",
+}
+
+def _get_schedule_gid(month: int) -> str:
+    """Получить GID вкладки графика по номеру месяца через API Google Sheets."""
+    try:
+        sheet_name = MONTH_SHEET_NAMES.get(month, "")
+        if not sheet_name:
+            return SCHEDULE_SHEET_GID
+        # Получаем список листов через экспорт метаданных
+        url = f"https://docs.google.com/spreadsheets/d/{SCHEDULE_SHEET_ID}/edit"
+        r = _session().get(url, timeout=15)
+        # Ищем gid для нужного листа в HTML
+        import re
+        pattern = rf'"name":"{re.escape(sheet_name)}"[^}}]*?"sheetId":(\d+)'
+        m = re.search(pattern, r.text)
+        if not m:
+            # Попробуем другой формат
+            pattern2 = rf'gid=(\d+)[^"]*"[^>]*>{re.escape(sheet_name)}'
+            m = re.search(pattern2, r.text)
+        if m:
+            gid = m.group(1)
+            print(f"[OK] График вкладка «{sheet_name}» gid={gid}")
+            return gid
+    except Exception as e:
+        print(f"[WARN] Не удалось определить GID листа: {e}")
+    return SCHEDULE_SHEET_GID
 
 def load_schedule(target_date: date) -> dict:
     """
@@ -272,8 +306,9 @@ def load_schedule(target_date: date) -> dict:
     if not PANDAS_OK:
         return {}
     try:
+        gid = _get_schedule_gid(target_date.month)
         url = (f"https://docs.google.com/spreadsheets/d/{SCHEDULE_SHEET_ID}"
-               f"/export?format=csv&gid={SCHEDULE_SHEET_GID}")
+               f"/export?format=csv&gid={gid}")
         import io
         r = _session().get(url, timeout=30)
         r.raise_for_status()
@@ -1275,7 +1310,8 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
 
 def generate_html(all_stats: list, month_data: dict, today: date, org_name: str = "") -> str:
     baristas = [e for e in all_stats if e["role"] == "barista"]
-    all_emps = [e for e in all_stats if e["role"] in ("barista", "waiter")]
+    baristas = [e for e in all_stats if e["role"] == "barista"]
+    waiters  = [e for e in all_stats if e["role"] == "waiter"]
     others   = [e for e in all_stats if e["role"] == "other"]
 
     worked_today = sum(1 for e in all_stats if e["worked_today"])
@@ -1283,9 +1319,9 @@ def generate_html(all_stats: list, month_data: dict, today: date, org_name: str 
     month_label  = MONTH_NAMES[today.month]
     gen_at       = datetime.now().strftime("%d.%m.%Y %H:%M")
 
-    b_sec = _role_section("waiter", "Сотрудники", all_emps, month_data, today, "👥")
-    w_sec = ""
-    o_sec = _role_section("other",  "Остальные",  others,   month_data, today, "👤")
+    b_sec = _role_section("barista", "Бариста",   baristas, month_data, today, "☕")
+    w_sec = _role_section("waiter",  "Официанты", waiters,  month_data, today, "🍽️")
+    o_sec = _role_section("other",   "Остальные", others,   month_data, today, "👤")
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
