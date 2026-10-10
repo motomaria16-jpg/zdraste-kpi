@@ -1,5 +1,5 @@
-requests
-pandas
-openpyxl
-python-dateutil
-psycopg2-binary
+requests>=2.32,<3
+pandas>=2.2,<4
+openpyxl>=3.1,<4
+python-dateutil>=2.9,<3
+psycopg2-binary>=2.9,<3

@@ -4,13 +4,16 @@ iiko KPI Report — «Здрасте» корпоративный стиль
 Показывает всех сотрудников: работавших и нет. Отслеживает открытие/закрытие смены.
 """
 
-import os
-import requests
+import html
 import json
+import os
 import sys
 import argparse
 from datetime import datetime, date, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import requests
 
 try:
     import pandas as pd
@@ -21,34 +24,57 @@ except ImportError:
 # ─────────────────────────────────────────────
 # НАСТРОЙКИ
 # ─────────────────────────────────────────────
-IIKO_SERVER   = "https://zdr-90.iiko.it/resto"
-API_LOGIN     = "MKozlova"
-API_PASSWORD  = "123456"
-ORG_ID        = "ab5e0330-e657-4e8f-a075-2676b4e5c9a7"
+# Секреты и идентификаторы внешних систем задаются только через окружение.
+IIKO_SERVER = os.environ.get("IIKO_SERVER", "").rstrip("/")
+API_LOGIN = os.environ.get("IIKO_LOGIN", "")
+API_PASSWORD = os.environ.get("IIKO_PASSWORD", "")
+ORG_ID = os.environ.get("IIKO_ORG_ID", "")
+ORG_NAME = os.environ.get(
+    "IIKO_ORG_NAME",
+    "Волоколамское шоссе 95/2с8",
+).strip()
+OLAP_DEPARTMENT_FIELD = os.environ.get(
+    "IIKO_OLAP_DEPARTMENT_FIELD",
+    "Department.Id",
+).strip()
+IIKO_CA_BUNDLE = os.environ.get("IIKO_CA_BUNDLE", "")
+
+
+def _safe_error(exc: Exception) -> str:
+    """Описание ошибки без URL и query-параметров, где могут быть токены."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    suffix = f" (HTTP {status})" if status else ""
+    return f"{type(exc).__name__}{suffix}"
 
 # Коды ролей для API-режима (iiko role codes)
 BARISTA_ROLES = ["2145124279"]
 WAITER_ROLES  = ["2145125755",  "2145125516", "1680747245"]
 
 # ── Роли сотрудников для Excel-режима ──────────────────────────────────────
-# Заполните списки именами сотрудников точно так, как они указаны в выгрузке iiko.
-# Регистр не важен. Можно указывать только фамилию или фамилию + имя.
-BARISTA_NAMES = [
-    "Шкурко Виктория",
-    "Федотова Евгения",
-]
-WAITER_NAMES = [
-    "Герасимчук Мария",
-    "Харланова Виктория",
-    "Ефимова Елизавета",
-    "Екатерина Топал",
-    "Михнова Арина",
-    "Яков Белянцев",
-]
+# ФИО не хранятся в репозитории. Формат переменных: "Фамилия Имя;Фамилия Имя".
+def _env_names(variable_name: str) -> list[str]:
+    return [
+        value.strip()
+        for value in os.environ.get(variable_name, "").split(";")
+        if value.strip()
+    ]
+
+
+BARISTA_NAMES = _env_names("BARISTA_NAMES")
+WAITER_NAMES = _env_names("WAITER_NAMES")
 # ───────────────────────────────────────────────────────────────────────────
 
 OUTPUT_DIR = Path(__file__).parent / "reports"
-DATA_DIR   = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent / "data"
+APP_TIMEZONE = ZoneInfo(os.environ.get("APP_TIMEZONE", "Europe/Moscow"))
+
+
+def _now() -> datetime:
+    return datetime.now(APP_TIMEZONE)
+
+
+def _today() -> date:
+    return _now().date()
 
 # Нормативы времени
 OPEN_DEADLINE  = "08:15"   # открытие не позднее
@@ -75,43 +101,37 @@ MONTH_NAMES = {
 
 # ─── iiko API ──────────────────────────────────────────────────────────────
 
-import ssl
-import urllib3
-urllib3.disable_warnings()
-
 def _session():
-    """requests-сессия с ослабленным TLS для совместимости с iiko."""
-    import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.ssl_ import create_urllib3_context
+    """requests-сессия с обязательной проверкой TLS."""
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Zdraste-KPI/1.0"})
+    if IIKO_CA_BUNDLE:
+        session.verify = IIKO_CA_BUNDLE
+    return session
 
-    ctx = create_urllib3_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    ctx.set_ciphers("DEFAULT@SECLEVEL=1")
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-
-    class TLSAdapter(HTTPAdapter):
-        def init_poolmanager(self, *a, **kw):
-            kw["ssl_context"] = ctx
-            super().init_poolmanager(*a, **kw)
-
-    s = requests.Session()
-    s.mount("https://", TLSAdapter())
-    s.verify = False
-    s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0"
-    })
-    return s
 
 def get_token():
     import hashlib
+
+    required = {
+        "IIKO_SERVER": IIKO_SERVER,
+        "IIKO_LOGIN": API_LOGIN,
+        "IIKO_PASSWORD": API_PASSWORD,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "Не заданы обязательные переменные окружения: " + ", ".join(missing)
+        )
+
     pass_hash = hashlib.sha1(API_PASSWORD.encode()).hexdigest()
     url = f"{IIKO_SERVER}/api/auth"
     r = _session().get(url, params={"login": API_LOGIN, "pass": pass_hash}, timeout=60)
     r.raise_for_status()
     token = r.text.strip().strip('"')
-    print(f"[OK] Токен: {token[:8]}...")
+    if not token:
+        raise RuntimeError("iiko вернул пустой токен")
+    print("[OK] Авторизация iiko выполнена")
     return token
 
 def get_organizations(token):
@@ -120,15 +140,144 @@ def get_organizations(token):
                        params={"key": token}, timeout=60)
     r.raise_for_status()
     root = ET.fromstring(r.text)
-    ns = {"": root.tag.split("}")[0].strip("{") if "}" in root.tag else ""}
+    def local_name(tag):
+        return tag.rsplit("}", 1)[-1]
+
+    def child_text(item, field):
+        for child in item:
+            if local_name(child.tag) == field:
+                return (child.text or "").strip()
+        return ""
+
     result = []
-    for item in root.iter("corporateItemDto"):
-        eid  = item.findtext("id",   "")
-        name = item.findtext("name", "")
-        typ  = item.findtext("type", "")
+    for item in root.iter():
+        if local_name(item.tag) != "corporateItemDto":
+            continue
+        eid = child_text(item, "id")
+        name = child_text(item, "name")
+        typ = child_text(item, "type")
+        deleted = child_text(item, "deleted").casefold() == "true"
+        active_text = child_text(item, "active").casefold()
+        active = not deleted and active_text != "false"
         if eid:
-            result.append({"id": eid, "name": name, "type": typ})
+            result.append({
+                "id": eid,
+                "name": name,
+                "type": typ,
+                "active": active,
+            })
     return result
+
+
+def resolve_organization(organizations):
+    """Однозначно выбрать активное подразделение; никогда не брать первое."""
+    departments = [
+        item for item in organizations
+        if item.get("active", True)
+        and str(item.get("type", "")).upper() == "DEPARTMENT"
+    ]
+    if ORG_ID:
+        matches = [item for item in departments if item.get("id") == ORG_ID]
+        selector = f"IIKO_ORG_ID={ORG_ID}"
+    elif ORG_NAME:
+        expected = " ".join(ORG_NAME.split()).casefold()
+        matches = [
+            item for item in departments
+            if " ".join(str(item.get("name", "")).split()).casefold() == expected
+        ]
+        selector = f"IIKO_ORG_NAME={ORG_NAME}"
+    else:
+        raise RuntimeError("Нужно задать IIKO_ORG_ID или IIKO_ORG_NAME")
+
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Подразделение по {selector} найдено неоднозначно: {len(matches)}"
+        )
+    selected = matches[0]
+    if ORG_ID and ORG_NAME:
+        actual = " ".join(str(selected.get("name", "")).split()).casefold()
+        expected = " ".join(ORG_NAME.split()).casefold()
+        if actual != expected:
+            raise RuntimeError("IIKO_ORG_ID и IIKO_ORG_NAME указывают на разные подразделения")
+    return selected
+
+
+def _find_column_metadata(value, field_name):
+    if isinstance(value, dict):
+        direct = value.get(field_name)
+        if isinstance(direct, dict):
+            return direct
+        identifiers = (
+            value.get("name"),
+            value.get("fieldName"),
+            value.get("id"),
+            value.get("column"),
+        )
+        if field_name in identifiers:
+            return value
+        for nested in value.values():
+            found = _find_column_metadata(nested, field_name)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for nested in value:
+            found = _find_column_metadata(nested, field_name)
+            if found is not None:
+                return found
+    return None
+
+
+def validate_olap_department_filter(token):
+    """Проверить поддержку фильтра филиала в живой схеме iiko."""
+    r = _session().get(
+        f"{IIKO_SERVER}/api/v2/reports/olap/columns",
+        params={"key": token, "reportType": "SALES"},
+        timeout=60,
+    )
+    r.raise_for_status()
+    metadata = _find_column_metadata(r.json(), OLAP_DEPARTMENT_FIELD)
+    if metadata is None:
+        raise RuntimeError(
+            f"iiko OLAP не содержит поле {OLAP_DEPARTMENT_FIELD}"
+        )
+    filtering_allowed = metadata.get(
+        "filteringAllowed",
+        metadata.get("filterAllowed"),
+    )
+    if filtering_allowed is not True:
+        raise RuntimeError(
+            f"iiko OLAP не разрешает фильтрацию по {OLAP_DEPARTMENT_FIELD}"
+        )
+    field_type = str(
+        metadata.get("type")
+        or metadata.get("fieldType")
+        or metadata.get("valueType")
+        or metadata.get("columnType")
+        or ""
+    ).upper()
+    if "ID" not in field_type:
+        raise RuntimeError(
+            f"Неожиданный тип {OLAP_DEPARTMENT_FIELD}: {field_type or 'не указан'}"
+        )
+
+
+def _sales_filters(org_id, date_from, date_to):
+    if not org_id:
+        raise RuntimeError("Не определён UUID подразделения iiko")
+    return {
+        "OpenDate.Typed": {
+            "filterType": "DateRange",
+            "periodType": "CUSTOM",
+            "from": date_from[:10],
+            "to": date_to[:10],
+            "includeLow": True,
+            "includeHigh": True,
+        },
+        OLAP_DEPARTMENT_FIELD: {
+            "filterType": "IncludeValues",
+            "values": [org_id],
+        },
+    }
 
 def get_employees(token, org_id):
     import xml.etree.ElementTree as ET
@@ -151,8 +300,6 @@ def get_worked_hours(token, org_id, date_from, date_to):
     return None
 
 def get_sales(token, org_id, date_from, date_to):
-    d_from = date_from[:10]
-    d_to   = date_to[:10]
     payload = {
         "reportType": "SALES",
         "groupByRowFields": ["WaiterName"],
@@ -161,71 +308,49 @@ def get_sales(token, org_id, date_from, date_to):
             "UniqOrderId",               # Чеков
             "DishDiscountSumInt.average",# Средняя сумма заказа
         ],
-        "filters": {
-            "OpenDate.Typed": {
-                "filterType": "DateRange", "periodType": "CUSTOM",
-                "from": d_from, "to": d_to,
-                "includeLow": True, "includeHigh": True
-            }
-        },
+        "filters": _sales_filters(org_id, date_from, date_to),
         "buildSummary": False,
     }
     try:
         r = _session().post(f"{IIKO_SERVER}/api/v2/reports/olap",
                             params={"key": token}, json=payload, timeout=90)
         if r.status_code in (400, 500):
-            print(f"[DEBUG] sales error: {r.text[:400]}")
+            print(f"[WARN] Продажи: HTTP {r.status_code}")
             return None
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        print(f"[WARN] Продажи: {e}"); return None
+        print(f"[WARN] Продажи: {_safe_error(e)}"); return None
 
 def get_shift_times(token, org_id, date_from, date_to):
     """Время первого и последнего чека сотрудника за день."""
-    d_from = date_from[:10]
-    d_to   = date_to[:10]
     # OpenTime/CloseTime — поля группировки, берём их как строки
     # и потом находим min/max по каждому сотруднику
     payload = {
         "reportType": "SALES",
         "groupByRowFields": ["WaiterName", "OpenTime", "CloseTime"],
         "aggregateFields":  ["UniqOrderId"],
-        "filters": {
-            "OpenDate.Typed": {
-                "filterType": "DateRange", "periodType": "CUSTOM",
-                "from": d_from, "to": d_to,
-                "includeLow": True, "includeHigh": True
-            }
-        },
+        "filters": _sales_filters(org_id, date_from, date_to),
         "buildSummary": False,
     }
     try:
         r = _session().post(f"{IIKO_SERVER}/api/v2/reports/olap",
                             params={"key": token}, json=payload, timeout=90)
         if r.status_code in (400, 500):
-            print(f"[DEBUG] shift error: {r.text[:200]}")
+            print(f"[WARN] Время смены: HTTP {r.status_code}")
             return None
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        print(f"[WARN] Время смены: {e}"); return None
+        print(f"[WARN] Время смены: {_safe_error(e)}"); return None
 
 def get_category_sales(token, org_id, date_from, date_to):
     """Продажи по категориям блюд для каждого сотрудника."""
-    d_from = date_from[:10]
-    d_to   = date_to[:10]
     payload = {
         "reportType": "SALES",
         "groupByRowFields": ["WaiterName", "DishCategory"],
         "aggregateFields":  ["DishDiscountSumInt"],
-        "filters": {
-            "OpenDate.Typed": {
-                "filterType": "DateRange", "periodType": "CUSTOM",
-                "from": d_from, "to": d_to,
-                "includeLow": True, "includeHigh": True
-            }
-        },
+        "filters": _sales_filters(org_id, date_from, date_to),
         "buildSummary": False,
     }
     try:
@@ -251,7 +376,7 @@ def get_category_sales(token, org_id, date_from, date_to):
         print(f"[OK] Категории блюд: {len(result)} сотрудников")
         return result
     except Exception as e:
-        print(f"[WARN] Категории: {e}"); return None
+        print(f"[WARN] Категории: {_safe_error(e)}"); return None
 
 # ─── Настройки KPI по категориям ────────────────────────────────────────────
 DOBY_BAR_TARGET    = 0.08   # 8% от выручки для бариста
@@ -260,20 +385,21 @@ DESSERTS_TARGET    = 0.05   # 5% от выручки для всех
 
 # ─── Чтение графика из Google Sheets ────────────────────────────────────────
 
-SCHEDULE_SHEET_ID  = "1dkjs7ZkcXbbSzTXIVL_e4rYDlDsPtC5IY6ZmcRg-_Mc"
-SCHEDULE_SHEET_GID = "1043557538"  # fallback
+SCHEDULE_SHEET_ID = os.environ.get("SCHEDULE_SHEET_ID", "")
+SCHEDULE_SHEET_GID = os.environ.get("SCHEDULE_SHEET_GID", "")
 
 MONTH_SHEET_NAMES = {
-    1: "январь 2026", 2: "февраль 2026", 3: "март 2026",
-    4: "апрель 2026", 5: "май 2026",     6: "июнь 2026",
-    7: "июль 2026",   8: "август 2026",  9: "сентябрь 2026",
-    10: "октябрь 2026", 11: "ноябрь 2026", 12: "декабрь 2026",
+    1: "январь", 2: "февраль", 3: "март", 4: "апрель",
+    5: "май", 6: "июнь", 7: "июль", 8: "август",
+    9: "сентябрь", 10: "октябрь", 11: "ноябрь", 12: "декабрь",
 }
 
-def _get_schedule_gid(month: int) -> str:
-    """Получить GID вкладки графика по номеру месяца через API Google Sheets."""
+
+def _get_schedule_gid(target_date: date) -> str:
+    """Получить GID вкладки графика для месяца и года."""
     try:
-        sheet_name = MONTH_SHEET_NAMES.get(month, "")
+        month_name = MONTH_SHEET_NAMES.get(target_date.month, "")
+        sheet_name = f"{month_name} {target_date.year}" if month_name else ""
         if not sheet_name:
             return SCHEDULE_SHEET_GID
         # Получаем список листов через экспорт метаданных
@@ -292,7 +418,7 @@ def _get_schedule_gid(month: int) -> str:
             print(f"[OK] График вкладка «{sheet_name}» gid={gid}")
             return gid
     except Exception as e:
-        print(f"[WARN] Не удалось определить GID листа: {e}")
+        print(f"[WARN] Не удалось определить GID листа: {_safe_error(e)}")
     return SCHEDULE_SHEET_GID
 
 def load_schedule(target_date: date) -> dict:
@@ -302,10 +428,13 @@ def load_schedule(target_date: date) -> dict:
     строки 3+ — дата в col A (1-июн. и т.д.), сотрудник в col A, смены в колонках дат.
     Возвращает dict: фамилия_lower → {open: "HH:MM", close: "HH:MM"}
     """
-    if not PANDAS_OK:
+    if not PANDAS_OK or not SCHEDULE_SHEET_ID:
         return {}
     try:
-        gid = _get_schedule_gid(target_date.month)
+        gid = _get_schedule_gid(target_date)
+        if not gid:
+            print("[WARN] График: не задан SCHEDULE_SHEET_GID")
+            return {}
         url = (f"https://docs.google.com/spreadsheets/d/{SCHEDULE_SHEET_ID}"
                f"/export?format=csv&gid={gid}")
         import io
@@ -390,11 +519,11 @@ def load_schedule(target_date: date) -> dict:
         print(f"[OK] График: {len(result)} сотрудников на {target_date}")
         return result
     except Exception as e:
-        print(f"[WARN] График: {e}")
+        print(f"[WARN] График: {_safe_error(e)}")
         return {}
 
-GSHEET_ID  = "1OeIqCAlvms8fiYhcaEbNRJn3dAOK3qvy"
-GSHEET_GID = "1466093961"
+GSHEET_ID = os.environ.get("ATTENDANCE_SHEET_ID", "")
+GSHEET_GID = os.environ.get("ATTENDANCE_SHEET_GID", "")
 
 def load_attendance(target_date: date) -> dict:
     """
@@ -404,6 +533,8 @@ def load_attendance(target_date: date) -> dict:
     """
     if not PANDAS_OK:
         print("[WARN] Табель: pandas не установлен")
+        return {}
+    if not GSHEET_ID or not GSHEET_GID:
         return {}
     try:
         url = (f"https://docs.google.com/spreadsheets/d/{GSHEET_ID}"
@@ -465,7 +596,7 @@ def load_attendance(target_date: date) -> dict:
         print(f"[OK] Табель Google Sheets: {len(result)} записей за {target_date}")
         return result
     except Exception as e:
-        print(f"[WARN] Табель Google Sheets: {e}")
+        print(f"[WARN] Табель Google Sheets: {_safe_error(e)}")
         return {}
 
 def classify_role(role_code: str) -> str:
@@ -635,12 +766,17 @@ def load_hours_excel(path: str | Path) -> dict:
 
 def _role_by_name(name: str) -> str:
     """Определить роль сотрудника по имени из BARISTA_NAMES / WAITER_NAMES."""
-    nl = name.lower().strip()
-    for n in BARISTA_NAMES:
-        if nl == n.lower().strip() or nl.split()[0] == n.lower().split()[0]:
+    normalized = str(name or "").lower().strip()
+    if not normalized:
+        return "other"
+    surname = normalized.split()[0]
+    for configured_name in BARISTA_NAMES:
+        configured = configured_name.lower().strip()
+        if normalized == configured or surname == configured.split()[0]:
             return "barista"
-    for n in WAITER_NAMES:
-        if nl == n.lower().strip() or nl.split()[0] == n.lower().split()[0]:
+    for configured_name in WAITER_NAMES:
+        configured = configured_name.lower().strip()
+        if normalized == configured or surname == configured.split()[0]:
             return "waiter"
     return "other"
 
@@ -735,7 +871,14 @@ def check_shift_violation(open_time: str | None, close_time: str | None,
 # ─── JSON-хранилище за месяц ────────────────────────────────────────────────
 
 def get_month_key(d: date) -> str:
-    return d.strftime("%Y-%m")
+    """Ключ месяца, изолированный от старых и чужих подразделений."""
+    import hashlib
+
+    selector = " ".join((ORG_NAME or ORG_ID).split()).casefold()
+    if not selector:
+        raise RuntimeError("Нельзя создать ключ истории без филиала iiko")
+    scope = hashlib.sha256(selector.encode("utf-8")).hexdigest()[:16]
+    return f"{d.strftime('%Y-%m')}_{scope}"
 
 def load_month_data(month_key: str) -> dict:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -746,68 +889,107 @@ def load_month_data(month_key: str) -> dict:
     return {}
 
 def save_month_data(month_key: str, data: dict):
+    """Атомарно сохранить локальную резервную копию."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     path = DATA_DIR / f"month_{month_key}.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(temp_path, "w", encoding="utf-8") as file_obj:
+        json.dump(data, file_obj, ensure_ascii=False, indent=2)
+        file_obj.flush()
+        os.fsync(file_obj.fileno())
+    os.replace(temp_path, path)
 
 # ─── PostgreSQL хранилище ────────────────────────────────────────────────────
 
-PG_HOST = os.environ.get("PG_HOST", "aws-0-eu-west-1.pooler.supabase.com")
-PG_PORT = 5432
-PG_DB   = "postgres"
-PG_USER = os.environ.get("PG_USER", "postgres.ogolwcunfsfgobxclwgx")
-PG_PASS = os.environ.get("PG_PASS", "GeuBPY9vSCXuZdi6")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+PG_HOST = os.environ.get("PG_HOST", "")
+PG_PORT = int(os.environ.get("PG_PORT", "5432"))
+PG_DB = os.environ.get("PG_DB", "")
+PG_USER = os.environ.get("PG_USER", "")
+PG_PASS = os.environ.get("PG_PASS", "")
+
+
+def _pg_configured() -> bool:
+    return bool(DATABASE_URL or all((PG_HOST, PG_DB, PG_USER, PG_PASS)))
+
 
 def _pg_conn():
     import psycopg2
+
+    if DATABASE_URL:
+        return psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    if not _pg_configured():
+        raise RuntimeError("PostgreSQL не настроен")
     return psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=PG_DB,
-        user=PG_USER, password=PG_PASS, connect_timeout=10
+        host=PG_HOST,
+        port=PG_PORT,
+        dbname=PG_DB,
+        user=PG_USER,
+        password=PG_PASS,
+        connect_timeout=10,
+        sslmode=os.environ.get("PGSSLMODE", "require"),
     )
 
+_PG_READY = False
+
+
 def _pg_init():
-    """Создать таблицу если не существует."""
+    """Создать таблицу при первом обращении к настроенной БД."""
+    global _PG_READY
+    if _PG_READY:
+        return True
+    if not _pg_configured():
+        return False
     try:
         with _pg_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS month_data (
-                        month_key VARCHAR(7) PRIMARY KEY,
+                    CREATE TABLE IF NOT EXISTS month_data_v2 (
+                        month_key VARCHAR(32) PRIMARY KEY,
                         data      JSONB NOT NULL,
                         updated   TIMESTAMP DEFAULT NOW()
                     )
                 """)
             conn.commit()
+        _PG_READY = True
         return True
     except Exception as e:
-        print(f"[WARN] PostgreSQL недоступен: {e}")
+        print(f"[WARN] PostgreSQL недоступен: {_safe_error(e)}")
         return False
 
 def load_month_data_pg(month_key: str) -> dict:
     """Загрузить историю из PostgreSQL, с fallback на JSON."""
+    if not _pg_configured() or not _pg_init():
+        return load_month_data(month_key)
     try:
         with _pg_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT data FROM month_data WHERE month_key = %s", (month_key,))
+                cur.execute("SELECT data FROM month_data_v2 WHERE month_key = %s", (month_key,))
                 row = cur.fetchone()
                 if row:
                     print(f"[OK] История из PostgreSQL: {month_key}")
                     return row[0]
     except Exception as e:
-        print(f"[WARN] PostgreSQL чтение: {e}")
+        print(f"[WARN] PostgreSQL чтение: {_safe_error(e)}")
     # Fallback на локальный JSON
     return load_month_data(month_key)
 
 def save_month_data_pg(month_key: str, data: dict):
     """Сохранить историю в PostgreSQL и локально."""
-    # Всегда сохраняем локально как резерв
-    save_month_data(month_key, data)
+    # Локальная копия — резерв, но её ошибка не должна блокировать PostgreSQL.
+    try:
+        save_month_data(month_key, data)
+    except OSError as exc:
+        print(f"[WARN] Локальная резервная копия: {_safe_error(exc)}")
+        if not _pg_configured():
+            raise
+    if not _pg_configured() or not _pg_init():
+        return
     try:
         with _pg_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO month_data (month_key, data, updated)
+                    INSERT INTO month_data_v2 (month_key, data, updated)
                     VALUES (%s, %s, NOW())
                     ON CONFLICT (month_key) DO UPDATE
                     SET data = EXCLUDED.data, updated = NOW()
@@ -815,7 +997,7 @@ def save_month_data_pg(month_key: str, data: dict):
             conn.commit()
         print(f"[OK] История сохранена в PostgreSQL: {month_key}")
     except Exception as e:
-        print(f"[WARN] PostgreSQL запись: {e}")
+        print(f"[WARN] PostgreSQL запись: {_safe_error(e)}")
 
 def update_month_data(month_data: dict, all_emps: list, today: date):
     """Обновить историю месяца. Записывает ВСЕХ сотрудников (в т.ч. не работавших сегодня)."""
@@ -884,17 +1066,21 @@ def calc_monthly_category_pct(days: list, category: str) -> float:
     return round(total_cat / total_rev, 4) if total_rev > 0 else 0.0
 
 def get_kpi_status(avg_check: float, role: str):
+    """Текущая и ближайшая следующая ступени KPI."""
     levels = KPI.get(role, [])
-    current = None
-    for lvl in levels:
-        if avg_check >= lvl["threshold"]:
-            current = lvl; break
-    next_lvl = None
-    for lvl in reversed(levels):
-        if current is None or lvl["threshold"] > current["threshold"]:
-            if avg_check < lvl["threshold"]:
-                next_lvl = lvl
-    return current, next_lvl
+    current = next(
+        (level for level in levels if avg_check >= level["threshold"]),
+        None,
+    )
+    higher_levels = [
+        level for level in levels if avg_check < level["threshold"]
+    ]
+    next_level = min(
+        higher_levels,
+        key=lambda level: level["threshold"],
+        default=None,
+    )
+    return current, next_level
 
 # ─── Сборка статистики ──────────────────────────────────────────────────────
 
@@ -1078,7 +1264,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         f'{avg_legend}'
         f'<div style="width:1px;height:20px;background:var(--border)"></div>'
         f'<div class="kpi-legend-item"><span class="kpi-dot" style="background:var(--olive)"></span>'
-        f'<span class="kpi-threshold">Допы ≥ {int(DOBY_BAR_TARGET*100)}%</span>'
+        f'<span class="kpi-threshold">Допы ≥ {int((DOBY_BAR_TARGET if role_key == "barista" else DOBY_KITCHEN_TARGET)*100)}%</span>'
         f'<span class="kpi-sep">→</span><span class="kpi-bonus">+6 т.р.</span></div>'
         f'<div class="kpi-legend-item"><span class="kpi-dot" style="background:var(--olive)"></span>'
         f'<span class="kpi-threshold">Десерты ≥ {int(DESSERTS_TARGET*100)}%</span>'
@@ -1153,6 +1339,9 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         today_chk  = f"{emp['avg_check']:,.0f} ₽"   if worked and emp["avg_check"] > 0   else '<span class="dash">—</span>'
         month_chk  = f"{monthly_avg:,.0f} ₽"         if monthly_avg > 0                   else '<span class="dash">—</span>'
 
+        # Экранируем внешние данные перед вставкой в HTML.
+        safe_name = html.escape(str(emp.get("name", "")), quote=True)
+
         # Плановое время из графика
         plan_open  = emp.get("planned_open")
         plan_close = emp.get("planned_close")
@@ -1172,7 +1361,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         dop_label   = "Допы Бар" if role_key == "barista" else "Допы Кухня"
 
         # Месячные показатели по категориям
-        # Допы = Допы Бар + Допы Кухня для всех сотрудников
+        # Допы = Допы Бар + Допы Кухня + бутилированные напитки + алкоголь.
         monthly_dop  = calc_monthly_category_pct(month_days, "dops")
         monthly_des  = calc_monthly_category_pct(month_days, "desserts")
         monthly_rev  = sum(d.get("revenue", 0) for d in month_days if d.get("worked"))
@@ -1197,7 +1386,8 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
             </div>
             <div class="progress-meta"><span style="color:var(--muted);font-size:10px">цель {target_display}%{" · " + gap_str if gap_str else ""}</span></div>'''
 
-        dop_cell      = _kpi_cell(monthly_dop, DOBY_BAR_TARGET)
+        dop_target = DOBY_BAR_TARGET if role_key == "barista" else DOBY_KITCHEN_TARGET
+        dop_cell = _kpi_cell(monthly_dop, dop_target)
         desserts_cell = _kpi_cell(monthly_des, DESSERTS_TARGET)
 
         row_cls  = "" if worked else "row-absent"
@@ -1207,7 +1397,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         rows += f"""
         <tr class="{row_cls}">
           <td class="emp-name-cell">
-            <div class="name-main">{emp['name']}</div>
+            <div class="name-main">{safe_name}</div>
             <div class="name-meta">{worked_days} дн.{"&nbsp;&nbsp;" + viol_html if viol_html else ""}</div>
             {f'<div class="name-meta">{plan_html}</div>' if plan_html else ""}
           </td>
@@ -1235,7 +1425,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         <div class="emp-card {card_cls}">
           <div class="card-top">
             <div>
-              <div class="card-name">{emp['name']}</div>
+              <div class="card-name">{safe_name}</div>
               <div class="card-meta">{worked_days} дн. {viol_html} {absent_label}</div>
             </div>
             <div class="card-kpi-block">
@@ -1262,7 +1452,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
               <div class="card-cell-val">{today_chk}</div>
             </div>
             <div class="card-cell">
-              <div class="card-cell-label">Допы ≥8%</div>
+              <div class="card-cell-label" title="Допы Бар + Допы Кухня + Бутилированные напитки + Алкоголь">Допы ≥{int(dop_target * 100)}%</div>
               <div class="card-cell-val">{dop_cell}</div>
             </div>
             <div class="card-cell">
@@ -1294,7 +1484,7 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
         <th>Уход<br><span class="th-norm">план +10 мин</span></th>
         <th>Часов<br><span class="th-sub">сегодня</span></th>
         <th>Ср. чек<br><span class="th-sub">сегодня</span></th>
-        <th>Допы<br><span class="th-norm">≥ 8%</span></th>
+        <th title="Допы Бар + Допы Кухня + Бутилированные напитки + Алкоголь">Допы<br><span class="th-norm">цель по роли</span></th>
         <th>Десерты<br><span class="th-norm">≥ 5%</span></th>
         <th>Ср. чек<br><span class="th-sub">за месяц / KPI</span></th>
       </tr></thead>
@@ -1309,14 +1499,13 @@ def _role_section(role_key, role_label, emps, month_data, today, icon):
 
 def generate_html(all_stats: list, month_data: dict, today: date, org_name: str = "") -> str:
     baristas = [e for e in all_stats if e["role"] == "barista"]
-    baristas = [e for e in all_stats if e["role"] == "barista"]
     waiters  = [e for e in all_stats if e["role"] == "waiter"]
     others   = [e for e in all_stats if e["role"] == "other"]
 
     worked_today = sum(1 for e in all_stats if e["worked_today"])
     date_str     = today.strftime("%d.%m.%Y")
     month_label  = MONTH_NAMES[today.month]
-    gen_at       = datetime.now().strftime("%d.%m.%Y %H:%M")
+    gen_at = _now().strftime("%d.%m.%Y %H:%M")
 
     b_sec = _role_section("barista", "Бариста",   baristas, month_data, today, "☕")
     w_sec = _role_section("waiter",  "Официанты", waiters,  month_data, today, "🍽️")
@@ -1330,7 +1519,6 @@ def generate_html(all_stats: list, month_data: dict, today: date, org_name: str 
 <title>Здрасте — KPI {date_str}</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&family=Inter:wght@400;500;600&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');
 
 :root {{
   --terra:   #B85C38;
@@ -1633,9 +1821,47 @@ footer b {{ color:var(--terra); }}
 </html>"""
 
 
+def _stats_from_month_data(month_data: dict, today: date) -> list:
+    """Собрать last-known-good представление без обращения к внешним API."""
+    all_stats = []
+    for employee_id, employee_data in month_data.items():
+        days = employee_data.get("days", [])
+        today_day = next(
+            (day for day in days if day.get("date") == today.isoformat()),
+            None,
+        )
+        all_stats.append({
+            "id": employee_id,
+            "name": employee_data.get("name", employee_id),
+            "role": employee_data.get("role") or _role_by_name(
+                employee_data.get("name", "")
+            ),
+            "worked_today": bool(today_day and today_day.get("worked")),
+            "worked_hours": today_day.get("hours", 0) if today_day else 0,
+            "open_time": today_day.get("open_time") if today_day else None,
+            "close_time": today_day.get("close_time") if today_day else None,
+            "revenue": today_day.get("revenue", 0) if today_day else 0,
+            "orders_count": today_day.get("orders", 0) if today_day else 0,
+            "avg_check": today_day.get("avg_check", 0) if today_day else 0,
+            "planned_open": None,
+            "planned_close": None,
+        })
+    return all_stats
+
+
+def _cached_report_or_error(month_data: dict, today: date) -> str:
+    if month_data:
+        return generate_html(_stats_from_month_data(month_data, today), month_data, today, "")
+    raise RuntimeError("Нет корректной сохранённой версии отчёта")
+
+
+def _olap_response_ok(value) -> bool:
+    return isinstance(value, dict) and isinstance(value.get("data"), list)
+
+
 def generate_report_html() -> str:
     """Собрать отчёт и вернуть HTML — вызывается сервером при каждом запросе."""
-    today     = date.today()
+    today = _today()
     month_key = get_month_key(today)
     date_from = today.strftime("%Y-%m-%dT00:00:00")
     date_to   = today.strftime("%Y-%m-%dT23:59:59")
@@ -1646,40 +1872,18 @@ def generate_report_html() -> str:
     try:
         token = get_token()
     except Exception as e:
-        print(f"[WARN] iiko недоступна: {e} — показываем данные из базы")
-        # iiko недоступна — показываем последние данные из PostgreSQL
-        if month_data:
-            all_stats = []
-            for emp_id, emp_data in month_data.items():
-                days = emp_data.get("days", [])
-                today_day = next((d for d in days if d.get("date") == today.isoformat()), None)
-                role = "barista" if emp_data.get("name", "") in BARISTA_NAMES else "waiter"
-                all_stats.append({
-                    "id": emp_id,
-                    "name": emp_data.get("name", emp_id),
-                    "role": role,
-                    "worked_today": bool(today_day and today_day.get("worked")),
-                    "worked_hours": today_day.get("hours", 0) if today_day else 0,
-                    "open_time": today_day.get("open_time") if today_day else None,
-                    "close_time": today_day.get("close_time") if today_day else None,
-                    "revenue": today_day.get("revenue", 0) if today_day else 0,
-                    "orders_count": today_day.get("orders", 0) if today_day else 0,
-                    "avg_check": today_day.get("avg_check", 0) if today_day else 0,
-                    "planned_open": None,
-                    "planned_close": None,
-                })
-            html = generate_html(all_stats, month_data, today, "")
-            return html
-        return f"<h2>iiko недоступна и нет данных в базе</h2>"
+        print(f"[WARN] iiko недоступна: {_safe_error(e)} — показываем данные из базы")
+        # При сбое не перезаписываем корректный день нулями.
+        return _cached_report_or_error(month_data, today)
 
-    org_name = ""
     try:
-        orgs     = get_organizations(token)
-        org      = next((o for o in orgs if o.get("id") == ORG_ID), orgs[0] if orgs else None)
-        org_id   = org.get("id", ORG_ID) if org else ORG_ID
-        org_name = org.get("name", "") if org else ""
-    except Exception:
-        org_id = ORG_ID
+        org = resolve_organization(get_organizations(token))
+        org_id = org["id"]
+        org_name = org["name"]
+        validate_olap_department_filter(token)
+    except Exception as e:
+        print(f"[WARN] Филиал iiko не подтверждён: {_safe_error(e)}")
+        return _cached_report_or_error(month_data, today)
 
     try:
         employees = get_employees(token, org_id)
@@ -1690,9 +1894,28 @@ def generate_report_html() -> str:
     sales_data    = get_sales(token, org_id, date_from, date_to)
     shift_data    = get_shift_times(token, org_id, date_from, date_to)
     category_data = get_category_sales(token, org_id, date_from, date_to)
-    attendance    = load_attendance(today)
-    schedule      = load_schedule(today)
-    all_stats     = build_stats(employees, hours_data, sales_data, shift_data, attendance, schedule, category_data)
+    attendance = load_attendance(today)
+    schedule = load_schedule(today)
+
+    required_sources_ok = (
+        bool(employees)
+        and _olap_response_ok(sales_data)
+        and _olap_response_ok(shift_data)
+        and isinstance(category_data, dict)
+    )
+    if not required_sources_ok:
+        print("[WARN] Неполная загрузка источников — история не обновлена")
+        return _cached_report_or_error(month_data, today)
+
+    all_stats = build_stats(
+        employees,
+        hours_data,
+        sales_data,
+        shift_data,
+        attendance,
+        schedule,
+        category_data,
+    )
 
     month_data = update_month_data(month_data, all_stats, today)
     save_month_data_pg(month_key, month_data)
@@ -1715,7 +1938,7 @@ def main():
     parser.add_argument("--date",   metavar="YYYY-MM-DD", help="Дата отчёта (по умолчанию — сегодня)")
     args = parser.parse_args()
 
-    today = date.fromisoformat(args.date) if args.date else date.today()
+    today = date.fromisoformat(args.date) if args.date else _today()
     month_key = get_month_key(today)
 
     print(f"\n{'='*54}")
@@ -1750,34 +1973,47 @@ def main():
         try:
             token = get_token()
         except Exception as e:
-            print(f"[ERROR] Авторизация: {e}"); sys.exit(1)
+            print(f"[ERROR] Авторизация: {_safe_error(e)}"); sys.exit(1)
 
-        org_name = ""
         try:
-            orgs     = get_organizations(token)
-            org      = next((o for o in orgs if o.get("id") == ORG_ID), orgs[0] if orgs else None)
-            org_id   = org.get("id", ORG_ID) if org else ORG_ID
-            org_name = org.get("name", "") if org else ""
+            org = resolve_organization(get_organizations(token))
+            org_id = org["id"]
+            org_name = org["name"]
+            validate_olap_department_filter(token)
         except Exception as e:
-            print(f"[WARN] Организации: {e}"); org_id = ORG_ID
+            print(f"[ERROR] Филиал iiko не подтверждён: {_safe_error(e)}")
+            sys.exit(2)
 
         try:
             employees = get_employees(token, org_id)
             print(f"[OK] Сотрудников: {len(employees)}")
         except Exception as e:
-            print(f"[ERROR] Сотрудники: {e}"); employees = []
+            print(f"[ERROR] Сотрудники: {_safe_error(e)}"); employees = []
 
         hours_data    = get_worked_hours(token, org_id, date_from, date_to)
         sales_data    = get_sales(token, org_id, date_from, date_to)
         shift_data    = get_shift_times(token, org_id, date_from, date_to)
         category_data = get_category_sales(token, org_id, date_from, date_to)
-        attendance    = load_attendance(today)
-        schedule      = load_schedule(today)
-        if hours_data and "raw_xml" in hours_data:
-            print(f"[DEBUG] hours XML: {hours_data['raw_xml'][:300]}")
-        if sales_data and "raw_xml" in sales_data:
-            print(f"[DEBUG] sales XML: {sales_data['raw_xml'][:300]}")
-        all_stats  = build_stats(employees, hours_data, sales_data, shift_data, attendance, schedule, category_data)
+        attendance = load_attendance(today)
+        schedule = load_schedule(today)
+        required_sources_ok = (
+            bool(employees)
+            and _olap_response_ok(sales_data)
+            and _olap_response_ok(shift_data)
+            and isinstance(category_data, dict)
+        )
+        if not required_sources_ok:
+            print("[ERROR] Неполная загрузка источников; история не изменена")
+            sys.exit(2)
+        all_stats = build_stats(
+            employees,
+            hours_data,
+            sales_data,
+            shift_data,
+            attendance,
+            schedule,
+            category_data,
+        )
 
     # ── Общая часть ──────────────────────────────────────────────────────────
     print(f"[OK] Всего: {len(all_stats)}, работали сегодня: {sum(e['worked_today'] for e in all_stats)}")
